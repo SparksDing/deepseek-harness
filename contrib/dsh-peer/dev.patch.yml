@@ -1,0 +1,6 @@
+# Local development overlay: load the entry straight from this checkout.
+- insert:
+    - id: peer-dev
+      name: ./lib/index.js
+      config:
+        role: dev
