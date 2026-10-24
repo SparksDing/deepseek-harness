@@ -41,6 +41,9 @@ const port = Number(options.port ?? process.env.DSH_PEER_PORT ?? 3099)
 const token = options.token ?? process.env.DSH_PEER_TOKEN ?? ''
 const name = options.name ?? process.env.DSH_PEER_NAME ?? 'dsh-hub'
 const control = options.control ?? process.env.DSH_PEER_CONTROL ?? '/tmp/dsh-peer.sock'
+const wsPort = options['ws-port'] ?? process.env.DSH_PEER_WS_PORT
+const wsHost = options['ws-host'] ?? process.env.DSH_PEER_WS_HOST ?? '127.0.0.1'
+const wsPath = options['ws-path'] ?? process.env.DSH_PEER_WS_PATH ?? '/dsh-peer'
 const quiet = options.quiet === 'true'
 
 /** Timestamped stderr diagnostics; stdout stays free for control clients. */
@@ -54,6 +57,7 @@ const hub = new PeerHub({ logger, get: () => undefined }, {
   name,
   token,
   listen: { host, port },
+  wsListen: wsPort === undefined ? undefined : { host: wsHost, port: Number(wsPort), path: wsPath },
   version: '0.1.0',
 })
 

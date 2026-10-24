@@ -2,7 +2,7 @@
 # A hub listens; a link dials one hub and serves that hub this harness.
 - insert:
     - id: peer-hub
-      name: '@local/dsh-peer'
+      name: 'dsh-peer'
       disabled: true
       config:
         role: hub
@@ -13,10 +13,11 @@
         token: ''
 
     - id: peer-link
-      name: '@local/dsh-peer'
+      name: 'dsh-peer'
       disabled: true
       config:
         role: link
         name: link
-        url: 'tcp://127.0.0.1:3099'
         token: ''
+        connect:
+          url: 'tcp://127.0.0.1:3099'
