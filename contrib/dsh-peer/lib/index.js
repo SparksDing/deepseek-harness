@@ -135,6 +135,15 @@ export function apply(ctx, config) {
         agentPreset: config.agentPreset,
       })
       registerLinkTools(linkCtx, link)
+      const prompt = linkCtx.get?.('systemPrompt')
+      prompt?.context?.({
+        name: 'peer:result-routing',
+        order: 900,
+        interpolate: false,
+        text: 'Peer result routing: after calling peer_send or peer_reply, send the message and END your turn. '
+          + 'The hub pushes its final answer back to this session automatically as a `[hub] ...` message. '
+          + 'Never poll files, URLs, or peer status to wait for that answer; polling only delays it.',
+      })
       linkCtx.effect(() => {
         link.start()
         return () => link.stop()
