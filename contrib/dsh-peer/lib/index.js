@@ -42,6 +42,10 @@ export const Config = Schema.object({
   mirrorWorkspace: Schema.string(),
   /** Maximum steer/cancel calls per peer per minute. */
   steerPerMinute: Schema.number().default(20),
+  /** Loopback port for the pending/bind API used by the GUI picker. */
+  apiPort: Schema.number().default(3096),
+  /** 'auto' delivers unsolicited peer messages immediately; 'picker' waits for a choice. */
+  bindMode: Schema.string().default('auto'),
   /** Optional WebSocket listener for hosts where only an HTTP port is reachable. */
   wsListen: Schema.object({
     host: Schema.string().default('127.0.0.1'),
@@ -88,6 +92,8 @@ export function apply(ctx, config) {
       mirror: config.mirror,
       mirrorWorkspace: config.mirrorWorkspace,
       steerPerMinute: config.steerPerMinute,
+      apiListen: { host: '127.0.0.1', port: config.apiPort },
+      bindMode: config.bindMode,
       wsListen: config.wsListen?.port === undefined
         ? undefined
         : { host: config.wsListen.host ?? '127.0.0.1', port: config.wsListen.port, path: config.wsListen.path },
