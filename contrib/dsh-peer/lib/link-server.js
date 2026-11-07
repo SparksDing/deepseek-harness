@@ -92,12 +92,43 @@ export class PeerHarnessServer extends HarnessSdkJsonRpcServer {
    * List the peer sessions this link currently owns, with their header cwd.
    * @returns {{ sessions: { id: string, cwd: string }[] }} owned sessions.
    */
-  #sessions() {
-    const sessions = []
+  async #sessions() {
+    const byId = new Map()
+    const titles = this.ctx.get('sessionTitle')
     for (const [id, record] of this.sessions) {
-      const cwd = record?.handle?.agent?.session?.header?.cwd
-      sessions.push({ id: String(id), cwd: typeof cwd === 'string' ? cwd : '' })
+      const session = record?.handle?.agent?.session
+      const cwd = session?.header?.cwd
+      let title = ''
+      try { title = String(titles?.get?.(session)?.title ?? '') } catch { /* best effort */ }
+      byId.set(String(id), { id: String(id), cwd: typeof cwd === 'string' ? cwd : '', title, createdAt: Number(session?.header?.createdAt ?? 0) })
     }
+    const persistence = this.ctx.get('sessionPersistence')
+    const cache = this.ctx.get('sessionProjectionCache')
+    if (persistence !== undefined) {
+      try {
+        for (const snapshot of await persistence.list()) {
+          const id = String(snapshot?.header?.id ?? '')
+          if (id.length === 0 || byId.has(id)) continue
+          let title = ''
+          try {
+            const block = cache?.cachedSnapshot(snapshot.header) ?? cache?.cachedPredecessorTitle(snapshot.header)
+            const value = block?.values?.title
+            if (typeof value === 'string') title = value
+          } catch { /* no cached title */ }
+          byId.set(id, {
+            id,
+            cwd: String(snapshot.header?.cwd ?? ''),
+            title,
+            createdAt: Number(snapshot.header?.createdAt ?? 0),
+          })
+        }
+      } catch {
+        // Persistence listing is best-effort; live sessions still show.
+      }
+    }
+    const sessions = [...byId.values()]
+      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+      .slice(0, 30)
     return { sessions }
   }
 
