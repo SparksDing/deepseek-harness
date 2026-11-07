@@ -25,6 +25,26 @@ function textBlock(text) {
 }
 
 /**
+ * Resolve the calling session's effective working directory, which is the
+ * workspace path the GUI groups it under. The session header keeps the origin
+ * cwd from creation time, so it is only a fallback.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - host context.
+ * @param {{ agent?: { session?: { header?: { cwd?: string } } } }} exec - tool execution context.
+ * @returns {Promise<string | undefined>} the workspace path, when known.
+ */
+async function callerCwd(ctx, exec) {
+  const agent = exec?.agent
+  if (agent === undefined) return undefined
+  try {
+    const directory = await ctx.get('workingDirectory')?.ensure?.(agent)
+    if (typeof directory === 'string' && directory.length > 0) return directory
+  } catch {
+    // A missing or unreadable directory falls back to the header origin.
+  }
+  return agent.session?.header?.cwd
+}
+
+/**
  * Register the hub's peer tools.
  * @param {import('@deepseek-ai/cordis').Context} ctx - host context with a tool registry.
  * @param {import('./hub.js').PeerHub} hub - the running hub.
@@ -126,6 +146,8 @@ export function registerHubTools(ctx, hub) {
         prompt: args.prompt,
         session: args.session,
         fresh: args.fresh,
+        mirrorCwd: await callerCwd(ctx, exec),
+        callerSessionId: exec.agent === undefined ? undefined : String(exec.agent.session.id),
         timeoutMs: clampTimeout(args.timeoutMs, DEFAULT_ASK_TIMEOUT_MS),
         signal: exec.signal,
       })
@@ -163,12 +185,14 @@ export function registerHubTools(ctx, hub) {
       },
       render: (_args, value) => textBlock(`Queued on [${value.peer}] session ${value.sessionId} (message ${value.messageId}).`),
     },
-    async execute(args) {
+    async execute(args, exec) {
       return hub.send({
         peer: args.peer,
         prompt: args.prompt,
         session: args.session,
         fresh: args.fresh,
+        mirrorCwd: await callerCwd(ctx, exec),
+        callerSessionId: exec.agent === undefined ? undefined : String(exec.agent.session.id),
       })
     },
   }))
@@ -265,7 +289,7 @@ export function registerLinkTools(ctx, link) {
     description:
       'Send a message from this machine to the DeepSeek Harness hub you are linked to. '
       + 'Use it to report progress, ask the other side something, or answer without ending your turn. '
-      + 'The hub\'s agent sees the message through its `peer_wait` or `peer_inbox` tool.',
+      + 'The hub agent is woken immediately, so it can react in a new turn.',
     parameters: {
       text: { type: 'string', required: true, description: 'Message body to deliver to the hub.' },
     },
@@ -275,15 +299,52 @@ export function registerLinkTools(ctx, link) {
         additionalProperties: false,
         properties: {
           accepted: { type: 'boolean', required: true },
+          delivered: { type: 'boolean', required: true },
           hub: { type: 'string', required: true },
         },
       },
-      render: (_args, value) => textBlock(value.accepted ? `Delivered to hub "${value.hub}".` : `Hub "${value.hub}" did not accept the message.`),
+      render: (_args, value) => textBlock(value.accepted
+        ? (value.delivered
+            ? `Delivered to hub "${value.hub}" and woke its agent.`
+            : `Stored in hub "${value.hub}" inbox; no live agent was woken.`)
+        : `Hub "${value.hub}" did not accept the message.`),
     },
     async execute(args, exec) {
       const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
       const result = await link.reply(args.text, sessionId)
-      return { accepted: result.accepted, hub: String(link.hubInfo?.name ?? 'hub') }
+      return { accepted: result.accepted, delivered: result.delivered === true, hub: String(link.hubInfo?.name ?? 'hub') }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'peer_send',
+    description:
+      'Proactively send a message from this machine to the DeepSeek Harness hub, without waiting for a request. '
+      + 'The hub agent is woken with a new turn and can reply through `peer_ask` or `peer_send`. '
+      + 'Use it for unsolicited reports, alerts, or questions the other side should act on now.',
+    parameters: {
+      text: { type: 'string', required: true, description: 'Message body to deliver to the hub.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          accepted: { type: 'boolean', required: true },
+          delivered: { type: 'boolean', required: true },
+          hub: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => textBlock(value.accepted
+        ? (value.delivered
+            ? `Delivered to hub "${value.hub}" and woke its agent.`
+            : `Stored in hub "${value.hub}" inbox; no live agent was woken.`)
+        : `Hub "${value.hub}" did not accept the message.`),
+    },
+    async execute(args, exec) {
+      const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
+      const result = await link.reply(args.text, sessionId)
+      return { accepted: result.accepted, delivered: result.delivered === true, hub: String(link.hubInfo?.name ?? 'hub') }
     },
   }))
 
@@ -300,10 +361,11 @@ export function registerLinkTools(ctx, link) {
           hub: { type: 'string', required: true },
           url: { type: 'string', required: true },
           since: { type: 'string', required: true },
+          version: { type: 'string', required: true },
         },
       },
       render: (_args, value) => textBlock(value.connected
-        ? `Linked to hub "${value.hub}" at ${value.url} since ${value.since}.`
+        ? `Linked to hub "${value.hub}" at ${value.url} since ${value.since} (peer ${value.version}).`
         : `Not linked (target ${value.url}).`),
     },
     execute() {
@@ -313,6 +375,7 @@ export function registerLinkTools(ctx, link) {
         hub: status.hub ?? '',
         url: status.url,
         since: status.since ?? '',
+        version: status.version ?? '0.0.0',
       })
     },
   }))

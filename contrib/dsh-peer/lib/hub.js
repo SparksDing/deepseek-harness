@@ -10,9 +10,10 @@
  * @module @local/dsh-peer/hub
  */
 
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { createServer as createTlsServer } from 'node:tls'
-import { PeerConnection, HANDSHAKE_TIMEOUT_MS, describeError, localIdentity, peerSessionId, readHello, tokenMatches } from './protocol.js'
+import { PeerConnection, HANDSHAKE_TIMEOUT_MS, PEER_VERSION, describeError, localIdentity, peerSessionId, readHello, tokenMatches } from './protocol.js'
 import { createWebSocketServer } from './ws.js'
 import { SessionMirror } from './mirror.js'
 
@@ -69,6 +70,9 @@ export class LinkSession {
  */
 class SessionState {
   constructor() {
+    this.mirrorCwd = undefined
+    /** Local session that most recently asked this remote session. */
+    this.callerSessionId = undefined
     this.lastAssistant = ''
     this.lastTurnReason = ''
     this.status = 'idle'
@@ -77,6 +81,8 @@ class SessionState {
     this.receipts = new Set()
     /** @type {Set<() => void>} */
     this.waiters = new Set()
+    /** Local session that most recently talked to any peer; wake fallback. */
+    this.lastCallerSessionId = undefined
   }
 
   /** Resolve every waiter; each re-checks its own predicate. */
@@ -121,7 +127,11 @@ export class PeerHub {
     this.inboxWaiters = new Set()
     this.mirror = config.mirror === false
       ? undefined
-      : new SessionMirror(ctx, { cwd: config.cwd ?? process.cwd(), logger: ctx.logger })
+      : new SessionMirror(ctx, {
+          cwd: config.cwd ?? process.cwd(),
+          workspacePath: config.mirrorWorkspace,
+          logger: ctx.logger,
+        })
   }
 
   /** Bind the listener. Fails loud when a non-loopback bind has no token. */
@@ -201,6 +211,7 @@ export class PeerHub {
    * @param {string} request.prompt - text to send.
    * @param {string} [request.session] - stable conversation name.
    * @param {boolean} [request.fresh] - start a new conversation instead.
+   * @param {string} [request.mirrorCwd] - local session cwd the mirror should adopt.
    * @param {number} [request.timeoutMs] - deadline.
    * @param {AbortSignal} [request.signal] - cancellation.
    * @returns {Promise<{ peer: string, sessionId: string, text: string, status: string, elapsedMs: number, timedOut: boolean }>} the turn result.
@@ -210,6 +221,11 @@ export class PeerHub {
     const timeoutMs = request.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS
     const sessionId = this.#sessionFor(link, request.session, request.fresh)
     const state = this.#state(link, sessionId)
+    if (typeof request.mirrorCwd === 'string' && request.mirrorCwd.length > 0) state.mirrorCwd = request.mirrorCwd
+    if (typeof request.callerSessionId === 'string' && request.callerSessionId.length > 0) {
+      state.callerSessionId = request.callerSessionId
+      this.lastCallerSessionId = request.callerSessionId
+    }
     const startedAt = Date.now()
     const idleBefore = state.idleCount
     state.lastAssistant = ''
@@ -241,7 +257,11 @@ export class PeerHub {
   async send(request) {
     const link = this.require(request.peer)
     const sessionId = this.#sessionFor(link, request.session, request.fresh)
-    this.#state(link, sessionId)
+    const state = this.#state(link, sessionId)
+    if (typeof request.callerSessionId === 'string' && request.callerSessionId.length > 0) {
+      state.callerSessionId = request.callerSessionId
+      this.lastCallerSessionId = request.callerSessionId
+    }
     await this.#initialize(link)
     await this.#ensureSession(link, sessionId)
     const prompt = await link.conn.request('session/prompt', {
@@ -470,7 +490,7 @@ export class PeerHub {
         this.ctx.logger.info(`peer hub: link "${link.name}" connected from ${remote}`)
         return {
           protocol: 1,
-          hub: localIdentity({ name: this.config.name, role: 'hub', version: this.config.version ?? '0.1.0' }),
+          hub: localIdentity({ name: this.config.name, role: 'hub', version: this.config.version ?? PEER_VERSION }),
         }
       }
       return this.#handleRequest(link, method, params)
@@ -508,10 +528,41 @@ export class PeerHub {
         this.inbox.push({ peer: link.name, text, sessionId, at: Date.now(), read: false })
         if (this.inbox.length > INBOX_LIMIT) this.inbox.splice(0, this.inbox.length - INBOX_LIMIT)
         for (const waiter of [...this.inboxWaiters]) waiter()
-        return { accepted: true, at: Date.now() }
+        const delivered = this.#deliverToAgent(link, sessionId, text)
+        return { accepted: true, at: Date.now(), delivered }
       }
       default:
         throw new Error(`hub does not serve "${method}"`)
+    }
+  }
+
+  /**
+   * Deliver an unsolicited message to the local agent that last asked this
+   * remote session, waking it with a new turn. Without this the message only
+   * lands in the inbox, which the local agent sees only while it is waiting.
+   * @param {LinkSession} link - source link.
+   * @param {string} sessionId - remote session id the link replied on.
+   * @param {string} text - message body.
+   * @returns {boolean} whether a live local agent was woken.
+   */
+  #deliverToAgent(link, sessionId, text) {
+    const state = link.sessions.get(sessionId)
+    const callerSessionId = state?.callerSessionId ?? this.lastCallerSessionId
+    if (callerSessionId === undefined) return false
+    const agents = this.ctx.get?.('agents')
+    const agent = agents?.get?.(callerSessionId)
+    if (agent === undefined || typeof agent.followup !== 'function') return false
+    try {
+      agent.followup({
+        id: `peer-message-${randomUUID()}`,
+        role: 'user',
+        content: [{ type: 'text', text: `[peer ${link.name}] ${text}` }],
+        source: { kind: 'user' },
+      })
+      return true
+    } catch (error) {
+      this.ctx.logger.warn(`peer hub: could not wake ${String(callerSessionId)}: ${error instanceof Error ? error.message : String(error)}`)
+      return false
     }
   }
 
@@ -538,7 +589,7 @@ export class PeerHub {
     }
     if (method !== 'session.event') return
     const event = /** @type {Record<string, unknown> | undefined} */ (params.event)
-    if (event !== undefined) this.mirror?.append(link.name, sessionId, /** @type {any} */ (event))
+    if (event !== undefined) this.mirror?.append(link.name, sessionId, /** @type {any} */ (event), state.mirrorCwd)
     if (event === undefined || typeof event.type !== 'string') return
     if (event.type === 'agent/inbox/spliced') {
       const data = /** @type {Record<string, unknown>} */ (event.data ?? {})

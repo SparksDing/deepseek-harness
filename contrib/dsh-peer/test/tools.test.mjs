@@ -45,7 +45,7 @@ assert.deepEqual(await byName.peer_ask.execute({ peer: 'win', prompt: 'go', time
   timedOut: false,
 })
 assert.equal(hubCalls.at(-1)[1].timeoutMs, 1_000, 'deadline is clamped to the floor')
-assert.deepEqual(await byName.peer_send.execute({ peer: 'win', prompt: 'go' }), { peer: 'win', sessionId: 'peer-win-default', messageId: 'm1' })
+assert.deepEqual(await byName.peer_send.execute({ peer: 'win', prompt: 'go' }, exec), { peer: 'win', sessionId: 'peer-win-default', messageId: 'm1' })
 assert.deepEqual(await byName.peer_wait.execute({ peer: 'win' }, exec), { messages: [], timedOut: true })
 assert.equal(hubCalls.at(-1)[1].timeoutMs, 120_000, 'wait default')
 assert.deepEqual(await byName.peer_inbox.execute({}), { messages: [{ peer: 'win', text: 'hi', at: '2026-01-01T00:00:00.000Z' }] })
@@ -58,24 +58,27 @@ for (const tool of hubTools) {
 const linkCalls = []
 const link = {
   hubInfo: { name: 'linux-hub' },
-  status: () => ({ connected: true, hub: 'linux-hub', url: 'tcp://h:3099', name: 'win', since: '2026-01-01T00:00:00.000Z', attempt: 0 }),
+  status: () => ({ connected: true, hub: 'linux-hub', url: 'tcp://h:3099', name: 'win', since: '2026-01-01T00:00:00.000Z', attempt: 0, version: '0.2.0' }),
   reply: async (text, sessionId) => {
     linkCalls.push([text, sessionId])
-    return { accepted: true }
+    return { accepted: true, delivered: true }
   },
 }
 const linkCtx = { tools: { register: tool => registered.push(tool) } }
 registerLinkTools(linkCtx, link)
 const linkTools = registered.splice(0)
-assert.deepEqual(linkTools.map(tool => tool.name), ['peer_reply', 'peer_status'])
+assert.deepEqual(linkTools.map(tool => tool.name), ['peer_reply', 'peer_send', 'peer_status'])
 const agentExec = { signal: new AbortController().signal, agent: { session: { id: 'local-session' } } }
-assert.deepEqual(await linkTools[0].execute({ text: 'hello' }, agentExec), { accepted: true, hub: 'linux-hub' })
+assert.deepEqual(await linkTools[0].execute({ text: 'hello' }, agentExec), { accepted: true, delivered: true, hub: 'linux-hub' })
 assert.deepEqual(linkCalls, [['hello', 'local-session']])
-assert.deepEqual(await linkTools[1].execute({}), {
+assert.deepEqual(await linkTools[1].execute({ text: 'unsolicited' }, agentExec), { accepted: true, delivered: true, hub: 'linux-hub' })
+assert.deepEqual(linkCalls, [['hello', 'local-session'], ['unsolicited', 'local-session']])
+assert.deepEqual(await linkTools[2].execute({}), {
   connected: true,
   hub: 'linux-hub',
   url: 'tcp://h:3099',
   since: '2026-01-01T00:00:00.000Z',
+  version: '0.2.0',
 })
 
 // Rendering never throws on a well-formed result.
@@ -87,7 +90,7 @@ for (const tool of [...hubTools, ...linkTools]) {
       : tool.name === 'peer_send'
         ? { peer: 'w', sessionId: 's', messageId: 'm' }
         : tool.name === 'peer_reply'
-          ? { accepted: true, hub: 'h' }
+          ? { accepted: true, delivered: true, hub: 'h' }
           : tool.name === 'peer_status'
             ? { connected: false, hub: '', url: 'tcp://h', since: '' }
             : { messages: [], timedOut: true }
