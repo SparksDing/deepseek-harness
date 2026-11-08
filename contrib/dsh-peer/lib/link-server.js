@@ -17,6 +17,7 @@
 
 import { mkdir } from 'node:fs/promises'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { PeerBus } from './bus.js'
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server'
 
 /**
@@ -36,6 +37,8 @@ export class PeerHarnessServer extends HarnessSdkJsonRpcServer {
     this.sessionCwds = new Map()
     /** Link session id -> hub session that last messaged it. */
     this.origins = new Map()
+    /** Inbound message record for this node. */
+    this.bus = new PeerBus()
   }
 
   /**
@@ -230,6 +233,8 @@ export class PeerHarnessServer extends HarnessSdkJsonRpcServer {
     const message = createUserMessage({ content: blocks, source: { kind: 'user' } })
     if (record.handle.agent.status === 'idle') record.handle.agent.followup(message)
     else record.handle.agent.steer(message)
+    const text = blocks.filter(block => block?.type === 'text').map(block => String(block.text ?? '')).join('')
+    this.bus.record({ peer: 'hub', text, targetSessionId: String(params?.sessionId) })
     return { accepted: true, messageId: message.id }
   }
 
