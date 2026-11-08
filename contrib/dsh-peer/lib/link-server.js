@@ -34,6 +34,8 @@ export class PeerHarnessServer extends HarnessSdkJsonRpcServer {
     this.presetId = presetId
     /** Working directory requested before a peer session is created. */
     this.sessionCwds = new Map()
+    /** Link session id -> hub session that last messaged it. */
+    this.origins = new Map()
   }
 
   /**
@@ -192,6 +194,9 @@ export class PeerHarnessServer extends HarnessSdkJsonRpcServer {
    * @returns {{ accepted: boolean, messageId: string }} the enqueue receipt.
    */
   async #steer(params) {
+    if (typeof params?.originSessionId === 'string' && params.originSessionId.length > 0) {
+      this.origins.set(String(params.sessionId), params.originSessionId)
+    }
     const blocks = params?.contentBlocks
     if (!Array.isArray(blocks) || blocks.length === 0) throw new TypeError('session/steer requires contentBlocks')
     let record

@@ -116,6 +116,15 @@ export class PeerLink {
   }
 
   /**
+   * The hub session that last messaged a local session.
+   * @param {string} sessionId - local session id.
+   * @returns {string | undefined} hub session id.
+   */
+  originFor(sessionId) {
+    return this.server?.origins?.get(String(sessionId))
+  }
+
+  /**
    * Ask the hub for its workspaces and sessions, so the initiator can pick a
    * target session before sending.
    * @returns {Promise<{ workspaces: { path: string, title: string }[], sessions: { id: string, cwd: string, title: string, createdAt: number }[] }>} hub targets.
