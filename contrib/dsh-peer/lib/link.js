@@ -125,6 +125,30 @@ export class PeerLink {
   }
 
   /**
+   * Inject a message into a hub session, using the hub's controller when available.
+   * @param {string} sessionId - hub session id.
+   * @param {object[]} contentBlocks - message content.
+   * @returns {Promise<{ accepted: boolean, messageId: string }>} the receipt.
+   */
+  async steer(sessionId, contentBlocks) {
+    const conn = this.conn
+    if (conn === undefined) throw new Error('peer link is not connected to its hub')
+    return conn.request('peer/steer', { sessionId, contentBlocks }, { timeoutMs: 15_000 })
+  }
+
+  /**
+   * Abort a running hub turn.
+   * @param {string} sessionId - hub session id.
+   * @param {string} [reason] - recorded reason.
+   * @returns {Promise<{ cancelled: boolean, status: string }>} the outcome.
+   */
+  async cancel(sessionId, reason) {
+    const conn = this.conn
+    if (conn === undefined) throw new Error('peer link is not connected to its hub')
+    return conn.request('peer/cancel', { sessionId, reason }, { timeoutMs: 15_000 })
+  }
+
+  /**
    * Ask the hub for its workspaces and sessions, so the initiator can pick a
    * target session before sending.
    * @returns {Promise<{ workspaces: { path: string, title: string }[], sessions: { id: string, cwd: string, title: string, createdAt: number }[] }>} hub targets.
